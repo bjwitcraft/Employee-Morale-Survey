@@ -1,7 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { z } from 'zod';
 import { db } from '../../lib/firebaseAdmin';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
+
 
 const AnswerSchema = z.object({
   id: z.string(),
@@ -28,7 +29,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     answers: parsed.data.answers.map(a => ({ ...a, value: normalize(a) })),
     req: { ua }
   };
-  const id = uuidv4();
+  const id = randomUUID();
   await db.collection('responses').doc(id).set(doc);
   return res.status(201).json({ ok: true, id });
 }
