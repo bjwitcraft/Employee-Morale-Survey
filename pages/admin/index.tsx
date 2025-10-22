@@ -1,205 +1,118 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  BarChart, Bar
-} from 'recharts';
+import { pickQuestions } from '../data/questions';
+import { QuestionCard } from '../components/QuestionCard';
 
-const SHIFT_OPTIONS = ['10A','10B','12A','12B'] as const;
-const CATEGORIES = ['morale','direct_supervisor','other_supervisors','hr','training','senior_leadership','safety'] as const;
+type Meta = {
+  team?: string;
+  shift?: string;
+  location?: string;
+  seed: number;
+};
 
-export default function Admin(){
-  const [data, setData] = useState<any>(null);
-  const [range, setRange] = useState<'7d'|'30d'>('30d');
-  const [shift, setShift] = useState('');
-  const [category, setCategory] = useState('');
-  const [loading, setLoading] = useState(false);
+export default function Survey() {
+  const [mounted, setMounted] = useState(false);
+  const [meta, setMeta] = useState<Meta | null>(null);
+  const [questions, setQuestions] = useState<any[]>([]);
+  const [answers, setAnswers] = useState<Record<string, any>>({});
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const appName = process.env.NEXT_PUBLIC_APP_NAME || 'Morale Pulse';
 
-  function qs(params: Record<string, string>) {
-    const search = new URLSearchParams(params);
-    return search.toString();
+  // Only run on the client to avoid SSR/client mismatch
+  useEffect(() => {
+    setMounted(true);
+
+    // Read query from the browser
+    const search = new URLSearchParams(window.location.search);
+
+    const seedFromQuery = Number(search.get('seed'));
+    const seed = Number.isFinite(seedFromQuery)
+      ? seedFromQuery
+      : Math.floor((Date.now() % 100000)); // but used only on client after mount
+
+    const m: Meta = {
+      team: search.get('team') || 'DC',
+      shift: search.get('shift') || '',
+      location: search.get('loc') || '',
+      seed,
+    };
+
+    setMeta(m);
+    setQuestions(pickQuestions(seed, 4));
+  }, []);
+
+  async function submit() {
+    if (!meta) return;
+    setError(null);
+    try {
+      const payload = {
+        meta,
+        answers: questions.map((q) => ({
+          id: q.id,
+          type: q.type,
+          value: answers[q.id] ?? null,
+        })),
+      };
+      const res = await fetch('/api/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setDone(true);
+    } catch (e: any) {
+      setError(e?.message || 'Submission failed');
+    }
   }
 
-  async function load() {
-    setLoading(true);
-    const res = await fetch(`/api/admin/metrics?${qs({ range, shift, category })}`);
-    setLoading(false);
-    if (!res.ok) { setData(null); return; }
-    setData(await res.json());
-  }
-
-  function exportCsv() {
-    const url = `/api/admin/export?${qs({ range, shift })}`;
-    window.open(url, '_blank');
-  }
-
-  useEffect(() => { load(); }, [range, shift, category]);
-
-  // Per-question bars
-  const likertBars = useMemo(
-    () => (data?.summary?.likertAvg || []).map((r: any) => ({ id: r.id, avg: Number((r.avg || 0).toFixed(2)) })),
-    [data]
-  );
-  const yesnoBars = useMemo(
-    () => (data?.summary?.yesnoRate || []).map((r: any) => ({ id: r.id, rate: Math.round((r.rate || 0) * 100) })),
-    [data]
-  );
-
-  // Trend chart (percent field precomputed)
-  const trendData = useMemo(
-    () => (data?.trend || []).map((d: any) => ({ ...d, yesRatePct: Math.round(((d.yesRate || 0) * 100)) })),
-    [data]
-  );
-
-  // MTD vs Prior comparisons by category
-  const compareLikert = useMemo(() => {
-    const m = (data?.mtd?.categories || []).map((c: any) => ({ cat: c.cat, MTD: Number((c.likertAvg || 0).toFixed(2)) }));
-    const p = (data?.prior?.categories || []).reduce((acc: any, c: any) => {
-      acc[c.cat] = Number((c.likertAvg || 0).toFixed(2));
-      return acc;
-    }, {} as Record<string, number>);
-    return m.map((row: any) => ({ cat: row.cat, MTD: row.MTD, Prior: p[row.cat] ?? 0 }));
-  }, [data]);
-
-  const compareYes = useMemo(() => {
-    const m = (data?.mtd?.categories || []).map((c: any) => ({ cat: c.cat, MTD: Math.round((c.yesRate || 0) * 100) }));
-    const p = (data?.prior?.categories || []).reduce((acc: any, c: any) => {
-      acc[c.cat] = Math.round((c.yesRate || 0) * 100);
-      return acc;
-    }, {} as Record<string, number>);
-    return m.map((row: any) => ({ cat: row.cat, MTD: row.MTD, Prior: p[row.cat] ?? 0 }));
-  }, [data]);
-
-  async function logout() {
-    await fetch('/api/admin/logout');
-    window.location.href = '/admin/login';
+  // While we haven’t mounted or finished initializing, render a stable placeholder.
+  if (!mounted || !meta || questions.length === 0) {
+    return (
+      <div className="container">
+        <div className="panel">
+          <div className="header">
+            <div className="brand">📥 {appName}</div>
+            <a className="btn" href="/admin" title="Admin dashboard">Admin</a>
+          </div>
+          <div className="badge">Loading…</div>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="container">
       <div className="panel">
         <div className="header">
-          <div className="brand">📊 Dashboard</div>
-          <div className="row">
-            <button className="btn" onClick={logout}>Logout</button>
-          </div>
+          <div className="brand">📥 {appName}</div>
+          <a className="btn" href="/admin" title="Admin dashboard">Admin</a>
         </div>
 
-        <div className="row" style={{ marginBottom: 12, alignItems: 'center' }}>
-          <span className="label">Range</span>
-          <select className="select" value={range} onChange={e => setRange(e.target.value as '7d' | '30d')}>
-            <option value="7d">Last 7 days</option>
-            <option value="30d">Last 30 days</option>
-          </select>
-
-          <span className="label">Shift</span>
-          <select className="select" value={shift} onChange={e => setShift(e.target.value)}>
-            <option value="">All</option>
-            {SHIFT_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-
-          <span className="label">Category</span>
-          <select className="select" value={category} onChange={e => setCategory(e.target.value)}>
-            <option value="">All</option>
-            {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-
-          <button className="btn" onClick={load}>Refresh</button>
-          <button className="btn primary" onClick={exportCsv}>Export CSV</button>
-        </div>
-
-        {!data ? (
-          <div className={`badge ${loading ? 'loading' : ''}`}>Loading…</div>
-        ) : (
+        {!done ? (
           <>
-            <div className="card">Responses in window: <b>{data.count}</b></div>
-
-            {/* Daily Trend */}
-            <div className="card" style={{ height: 320 }}>
-              <div className="card-title">
-                Daily Trend — Likert Avg & Yes% {category ? `(category: ${category})` : ''}
-              </div>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trendData} margin={{ right: 20, left: 0, top: 10, bottom: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" />
-                  <YAxis yAxisId="left" domain={[0, 5]} />
-                  <YAxis yAxisId="right" orientation="right" domain={[0, 100]} />
-                  <Tooltip />
-                  <Legend />
-                  <Line yAxisId="left" type="monotone" dataKey="likertAvg" name="Likert Avg (1-5)" dot={false} />
-                  <Line yAxisId="right" type="monotone" dataKey="yesRatePct" name="Yes %" dot={false} strokeDasharray="4 4" />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-
-            {/* Current breakdowns */}
-            <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-              <div className="card" style={{ flex: '1 1 420px' }}>
-                <div className="card-title">Likert Averages by Question {category ? `(category: ${category})` : ''}</div>
-                <div style={{ height: 280 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={likertBars}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="id" />
-                      <YAxis domain={[0, 5]} />
-                      <Tooltip />
-                      <Bar dataKey="avg" name="Avg (1-5)" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-              <div className="card" style={{ flex: '1 1 420px' }}>
-                <div className="card-title">Yes/No Positive Rate by Question {category ? `(category: ${category})` : ''}</div>
-                <div style={{ height: 280 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={yesnoBars}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="id" />
-                      <YAxis domain={[0, 100]} />
-                      <Tooltip />
-                      <Bar dataKey="rate" name="Yes %" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </div>
-
-            {/* MTD vs Prior-month by Category */}
-            <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-              <div className="card" style={{ flex: '1 1 420px' }}>
-                <div className="card-title">MTD vs Prior — Likert Avg by Category</div>
-                <div style={{ height: 280 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={compareLikert}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="cat" />
-                      <YAxis domain={[0, 5]} />
-                      <Tooltip />
-                      <Legend />
-                      <Bar dataKey="MTD" />
-                      <Bar dataKey="Prior" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-              <div className="card" style={{ flex: '1 1 420px' }}>
-                <div className="card-title">MTD vs Prior — Yes % by Category</div>
-                <div style={{ height: 280 }}>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={compareYes}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="cat" />
-                      <YAxis domain={[0, 100]} />
-                      <Tooltip />
-                      <Legend />
-                      <Bar dataKey="MTD" />
-                      <Bar dataKey="Prior" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
+            {questions.map((q) => (
+              <QuestionCard
+                key={q.id}
+                q={q}
+                value={answers[q.id]}
+                onChange={(v: any) =>
+                  setAnswers((a) => ({ ...a, [q.id]: v }))
+                }
+              />
+            ))}
+            {error && <div className="badge" style={{ color: '#ffb4c0' }}>{error}</div>}
+            <div className="row" style={{ marginTop: 8, alignItems: 'center', justifyContent: 'space-between' }}>
+              <button onClick={submit} className="btn primary">Submit</button>
+              <div className="footer">Anonymous, ~30 seconds. Thank you!</div>
             </div>
           </>
+        ) : (
+          <div className="card" style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 24, marginBottom: 6 }}>✅ Thanks!</div>
+            <div className="badge" style={{ marginBottom: 10 }}>Your anonymous feedback was recorded.</div>
+            <a className="link" href="/admin" style={{ marginRight: 12 }}>Admin</a>
+            <a className="link" href={typeof window !== 'undefined' ? window.location.pathname + window.location.search : '#'}>Submit another</a>
+          </div>
         )}
       </div>
     </div>
